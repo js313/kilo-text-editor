@@ -1,5 +1,9 @@
 /*** includes ***/
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -7,6 +11,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <string.h>
 
 /*** defines ***/
@@ -30,11 +35,19 @@ enum editorKey
 
 /*** data ***/
 
+typedef struct erow // typedef just so we can refer to it as 'erow' instead of 'struct erow' while declaration
+{
+    int size;
+    char *chars;
+} erow;
+
 struct editorConfig
 {
     int cx, cy;
     int screenrows;
     int screencols;
+    int numrows;
+    erow *row;
     struct termios og_termios;
 };
 
@@ -210,6 +223,44 @@ int getWindowSize(int *rows, int *cols)
     return 0;
 }
 
+/*** row operations ***/
+
+void editorAppendRow(char *s, size_t len)
+{
+    // This is not allocating memory for the actual data or array of strings we are storing in memory
+    // It allocates memory for the pointers and metadat object that holds info about the line, like
+    // line's length and pointer to line's first character
+    E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+    int at = E.numrows;
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
+    E.numrows++;
+}
+
+/*** file i/o ***/
+
+void editorOpen(char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (!fp)
+        die("fopen");
+
+    char *line = NULL;
+    size_t linecap = 0;  // size_t - unsigned, Range: [0, SIZE_MAX]
+    ssize_t linelen = 0; // ssize_t - signed, Range: [-1, SSIZE_MAX]
+    while ((linelen = getline(&line, &linecap, fp)) != -1)
+    {
+        while (linelen > 0 && (line[linelen - 1] == '\r' || line[linelen - 1] == '\n'))
+            linelen--;
+        editorAppendRow(line, linelen);
+    }
+    free(line);
+    fclose(fp);
+}
+
 /*** append buffer ***/
 
 struct abuf
@@ -303,26 +354,36 @@ void editorDrawRows(struct abuf *ab)
 {
     for (int y = 0; y < E.screenrows; y++)
     {
-        if (y == E.screenrows / 3)
+        if (y >= E.numrows)
         {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome), "Kilo editor -- version %s", KILO_VERSION);
-            if (welcomelen > E.screencols)
-                welcomelen = E.screencols;
+            if (E.numrows == 0 && y == E.screenrows / 3)
+            {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome), "Kilo editor -- version %s", KILO_VERSION);
+                if (welcomelen > E.screencols)
+                    welcomelen = E.screencols;
 
-            int padding = (E.screencols - welcomelen) / 2;
-            if (padding)
+                int padding = (E.screencols - welcomelen) / 2;
+                if (padding)
+                {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--)
+                    abAppend(ab, " ", 1);
+                abAppend(ab, welcome, welcomelen);
+            }
+            else
             {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-            while (padding--)
-                abAppend(ab, " ", 1);
-            abAppend(ab, welcome, welcomelen);
         }
         else
         {
-            abAppend(ab, "~", 1);
+            int len = E.row[y].size;
+            if (len > E.screencols)
+                len = E.screencols;
+            abAppend(ab, E.row[y].chars, len);
         }
         abAppend(ab, "\x1b[K", 4);
         if (y < E.screenrows - 1)
@@ -363,14 +424,18 @@ void initEditor(void)
 {
     E.cx = 0;
     E.cy = 0;
+    E.numrows = 0;
+    E.row = NULL;
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
     enableRawMode();
     initEditor();
+    if (argc >= 2)
+        editorOpen(argv[1]);
 
     while (1)
     {

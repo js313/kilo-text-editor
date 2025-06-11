@@ -4,5 +4,8 @@ kilo: kilo.c
 build-run:
 	make kilo && ./kilo
 
+build-run-file:
+	make kilo && ./kilo kilo.c
+
 clean:
 	rm kilo
