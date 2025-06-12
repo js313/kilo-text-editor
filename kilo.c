@@ -43,11 +43,13 @@ typedef struct erow // typedef just so we can refer to it as 'erow' instead of '
 
 struct editorConfig
 {
-    int cx, cy;
-    int screenrows;
-    int screencols;
-    int numrows;
-    erow *row;
+    int cx, cy;     // cursor position
+    int rowoff;     // vertical scroll
+    int coloff;     // horizontal scroll
+    int screenrows; // editor height
+    int screencols; // editor width
+    int numrows;    // total lines loaded in memory
+    erow *row;      // stores the array of lines(as a struct of erow) in memory
     struct termios og_termios;
 };
 
@@ -293,25 +295,36 @@ void abFree(struct abuf *ab)
 
 void editorMoveCursor(int key)
 {
+    erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy]; // get current line
+
     switch (key)
     {
     case ARROW_LEFT:
         if (E.cx > 0)
             E.cx--;
+        else if (E.cy > 0)
+            E.cx = E.row[--E.cy].size;
         break;
     case ARROW_RIGHT:
-        if (E.cx < E.screencols - 1)
+        if (row && E.cx < row->size)
             E.cx++;
+        else if (row && E.cx == row->size)
+            E.cx = 0, E.cy++;
         break;
     case ARROW_UP:
         if (E.cy > 0)
             E.cy--;
         break;
     case ARROW_DOWN:
-        if (E.cy < E.screenrows - 1)
+        if (E.cy < E.numrows)
             E.cy++;
         break;
     }
+
+    row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy]; // get new current line
+    int rowlen = row ? row->size : 0;
+    if (E.cx > rowlen)
+        E.cx = rowlen;
 }
 
 void editorProcessKeyPress(void)
@@ -350,11 +363,28 @@ void editorProcessKeyPress(void)
 
 /*** outut ***/
 
+void editorScroll(void)
+{
+    // scroll UP
+    if (E.cy < E.rowoff)
+        E.rowoff = E.cy;
+    // scroll DOWN
+    if (E.cy >= E.rowoff + E.screenrows)
+        E.rowoff = E.cy - E.screenrows + 1;
+    // scroll LEFT
+    if (E.cx < E.coloff)
+        E.coloff = E.cx;
+    // scroll RIGHT
+    if (E.cx >= E.screencols + E.coloff)
+        E.coloff = E.cx - E.screencols + 1;
+}
+
 void editorDrawRows(struct abuf *ab)
 {
     for (int y = 0; y < E.screenrows; y++)
     {
-        if (y >= E.numrows)
+        int filerow = y + E.rowoff;
+        if (filerow >= E.numrows)
         {
             if (E.numrows == 0 && y == E.screenrows / 3)
             {
@@ -380,10 +410,12 @@ void editorDrawRows(struct abuf *ab)
         }
         else
         {
-            int len = E.row[y].size;
+            int len = E.row[filerow].size - E.coloff;
+            if (len < 0)
+                len = 0;
             if (len > E.screencols)
                 len = E.screencols;
-            abAppend(ab, E.row[y].chars, len);
+            abAppend(ab, &E.row[filerow].chars[E.coloff], len);
         }
         abAppend(ab, "\x1b[K", 4);
         if (y < E.screenrows - 1)
@@ -401,6 +433,8 @@ void editorRefreshScreen(void)
     // default args for H escape sequence are 1,1(row, column) counting starts from 1
     // write(STDOUT_FILENO, "\x1b[H", 3); // position the cursor to the 1st row and column same as "\x1b[1;1H"
 
+    editorScroll();
+
     struct abuf ab = ABUF_INIT;
 
     abAppend(&ab, "\x1b[?25l", 6); // Turn off cursor
@@ -409,7 +443,8 @@ void editorRefreshScreen(void)
     editorDrawRows(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    // subtracting E.rowoff as E.cy is positioned based on file not the editor window
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy - E.rowoff + 1, E.cx - E.coloff + 1);
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6); // Turn on cursor
@@ -424,6 +459,8 @@ void initEditor(void)
 {
     E.cx = 0;
     E.cy = 0;
+    E.rowoff = 0;
+    E.coloff = 0;
     E.numrows = 0;
     E.row = NULL;
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
