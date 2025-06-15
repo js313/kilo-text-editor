@@ -17,6 +17,7 @@
 /*** defines ***/
 
 #define KILO_VERSION "0.0.1"
+#define KILO_TAB_STOP 8
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 enum editorKey
@@ -38,7 +39,9 @@ enum editorKey
 typedef struct erow // typedef just so we can refer to it as 'erow' instead of 'struct erow' while declaration
 {
     int size;
-    char *chars;
+    int rsize;
+    char *chars;  // Actual chararcters
+    char *render; // Characters to render (e.g. 4 spaces for a tab)
 } erow;
 
 struct editorConfig
@@ -227,6 +230,35 @@ int getWindowSize(int *rows, int *cols)
 
 /*** row operations ***/
 
+void editorUpdateRow(erow *row)
+{
+    int tabs = 0;
+    for (int j = 0; j < row->size; j++)
+    {
+        if (row->chars[j] == '\t')
+            tabs++;
+    }
+    free(row->render);
+    row->render = malloc(row->size + tabs * (KILO_TAB_STOP - 1) + 1);
+
+    int idx = 0;
+    for (int j = 0; j < row->size; j++)
+    {
+        if (row->chars[j] == '\t')
+        {
+            row->render[idx++] = ' ';
+            while (idx % KILO_TAB_STOP == 0)
+                row->render[idx++] = ' ';
+        }
+        else
+        {
+            row->render[idx++] = row->chars[j];
+        }
+    }
+    row->render[idx] = '\0';
+    row->size = idx;
+}
+
 void editorAppendRow(char *s, size_t len)
 {
     // This is not allocating memory for the actual data or array of strings we are storing in memory
@@ -239,6 +271,11 @@ void editorAppendRow(char *s, size_t len)
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
+
+    E.row[at].rsize = 0;
+    E.row[at].render = NULL;
+    editorUpdateRow(E.row);
+
     E.numrows++;
 }
 
@@ -410,12 +447,12 @@ void editorDrawRows(struct abuf *ab)
         }
         else
         {
-            int len = E.row[filerow].size - E.coloff;
+            int len = E.row[filerow].rsize - E.coloff;
             if (len < 0)
                 len = 0;
             if (len > E.screencols)
                 len = E.screencols;
-            abAppend(ab, &E.row[filerow].chars[E.coloff], len);
+            abAppend(ab, &E.row[filerow].render[E.coloff], len);
         }
         abAppend(ab, "\x1b[K", 4);
         if (y < E.screenrows - 1)
